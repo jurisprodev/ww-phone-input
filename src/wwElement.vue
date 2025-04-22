@@ -12,68 +12,81 @@
       <button
         ref="selectorRef"
         type="button"
-        class="ww-phone-input-country-selector"
+      class="ww-phone-input-country-selector"
         @click="handleToggleDropdown"
         :style="countrySelectorStyle"
-      >
-        <div class="selected-country">
-          <span class="flag">{{ getFlagEmoji(selectedCountry.code) }}</span>
-          <span class="dial-code">+{{ selectedCountry.dialCode }}</span>
-        </div>
-        
-        <!-- Dropdown de países -->
+        :disabled="isReadonly"
+    >
+      <div class="selected-country">
+          <!-- Usar imagem personalizada ou emoji da bandeira -->
+          <span v-if="content.useCustomImages && selectedCountry.flag" class="flag flag-img">
+            <img :src="selectedCountry.flag" alt="country flag" />
+          </span>
+          <span v-else class="flag">{{ getFlagEmoji(selectedCountry.code) }}</span>
+        <span class="dial-code">+{{ selectedCountry.dialCode }}</span>
+      </div>
+      
+      <!-- Dropdown de países -->
         <div 
           v-if="countryDropdownOpen" 
           class="country-dropdown" 
           :class="{'dropdown-up': dropdownDirection === 'up'}"
           :style="dropdownStyle"
         >
-          <div class="search-container">
-            <input 
-              type="text" 
-              v-model="searchQuery" 
+        <div class="search-container">
+          <input 
+            type="text" 
+            v-model="searchQuery" 
               :placeholder="searchPlaceholder" 
-              @click.stop
+            @click.stop
               :style="searchInputStyle"
               class="search-input"
-            >
-          </div>
+          >
+        </div>
           <div class="country-list" :style="countryListStyle">
-            <div 
-              v-for="country in filteredCountries" 
-              :key="country.code" 
-              class="country-item"
-              @click.stop="selectCountry(country.code)"
-              :class="{ active: country.code === selectedCountry.code }"
+            <div v-if="filteredCountries.length === 0" class="no-results">
+              {{ noResultsText }}
+            </div>
+          <div 
+            v-for="country in filteredCountries" 
+            :key="country.code" 
+            class="country-item"
+            @click.stop="selectCountry(country.code)"
+            :class="{ active: country.code === selectedCountry.code }"
               :style="countryItemStyle"
             >
-              <span class="flag">{{ getFlagEmoji(country.code) }}</span>
-              <span class="country-name">{{ country.name }}</span>
-              <span class="dial-code">+{{ country.dialCode }}</span>
-            </div>
+              <!-- Usar imagem personalizada ou emoji da bandeira -->
+              <span v-if="content.useCustomImages && country.flag" class="flag flag-img">
+                <img :src="country.flag" alt="country flag" />
+              </span>
+              <span v-else class="flag">{{ getFlagEmoji(country.code) }}</span>
+            <span class="country-name">{{ country.name }}</span>
+            <span class="dial-code">+{{ country.dialCode }}</span>
           </div>
         </div>
+      </div>
       </button>
-      
-      <!-- Input de telefone -->
-      <input
-        ref="inputRef"
-        type="tel"
-        v-bind="inputBindings"
-        class="ww-phone-input-field"
-        @input="handleManualInput"
+    
+    <!-- Input de telefone -->
+    <input
+      ref="inputRef"
+      type="tel"
+      v-bind="inputBindings"
+      class="ww-phone-input-field"
+      @input="handleManualInput"
         @focus="onFocus"
-        @blur="onBlur"
-        @keyup.enter="onEnter"
-      />
+      @blur="onBlur"
+      @keyup.enter="onEnter"
+    />
     </div>
   </div>
 </template>
 
 <script>
-import { computed, ref, watch, inject, onMounted } from 'vue';
+import { computed, ref, watch, inject, onMounted, onBeforeUnmount } from 'vue';
 import { usePhoneInput } from './composables/usePhoneInput';
 import countries from './countries';
+import { logger } from './utils';
 
 export default {
   props: {
@@ -95,24 +108,36 @@ export default {
     'update:sidepanel-content',
   ],
   setup(props, { emit }) {
-    // Injetar wwLib diretamente
-    const wwLib = inject('wwLib', window.wwLib || {});
+    // Inicializar o composable usePhoneInput com wwLib para gerenciamento de variáveis
+    const phoneInput = usePhoneInput(props, emit, window.wwLib);
     
     // Placeholder de busca simples
     const searchPlaceholder = computed(() => {
       try {
-        if (wwLib && wwLib.wwLang) {
-          return wwLib.wwLang.getText({ en: 'Search', pt: 'Buscar' });
+        if (window.wwLib && window.wwLib.wwLang) {
+          return window.wwLib.wwLang.getText({ en: 'Search', pt: 'Buscar' });
         }
       } catch (e) {
-        console.warn('Error getting search placeholder:', e);
+        logger.warn('Erro ao obter placeholder de busca', e);
       }
       return 'Buscar';
     });
 
+    // Texto para nenhum resultado encontrado
+    const noResultsText = computed(() => {
+      try {
+        if (window.wwLib && window.wwLib.wwLang) {
+          return window.wwLib.wwLang.getText({ en: 'No results found', pt: 'Nenhum resultado encontrado' });
+        }
+      } catch (e) {
+        logger.warn('Erro ao obter texto de nenhum resultado', e);
+      }
+      return 'Nenhum resultado encontrado';
+    });
+
     // Função para lidar com evento de foco
     function onFocus() {
-      isReallyFocused.value = true;
+      phoneInput.isReallyFocused.value = true;
       
       // Emitir evento de foco
       emit('trigger-event', {
@@ -124,16 +149,19 @@ export default {
       try {
         emit('add-state', 'focus');
       } catch (e) {
-        console.warn('Error adding focus state:', e);
+        logger.warn('Erro ao adicionar estado de foco', e);
       }
     }
 
+    // Usar o composable usePhoneInput
     const {
       inputRef,
       displayValue,
       rawValue,
       variableValue,
       variableRawValue,
+      setValue,
+      setRawValue,
       isReallyFocused,
       isDebouncing,
       selectedCountry,
@@ -148,7 +176,7 @@ export default {
       focusInput,
       getFlagEmoji,
       onEnter
-    } = usePhoneInput(props, emit, wwLib);
+    } = phoneInput;
 
     // Injetar hook de formulário se disponível
     const useForm = inject('_wwForm:useForm', () => {});
@@ -173,7 +201,7 @@ export default {
         elementState: props.wwElementState, 
         emit, 
         sidepanelFormPath: 'form', 
-        setValue: (v) => variableValue.value = v 
+        setValue
       }
     );
 
@@ -189,8 +217,8 @@ export default {
         
         // Multi-idioma
         try {
-          if (wwLib && wwLib.wwLang) {
-            return wwLib.wwLang.getText(props.content.placeholder);
+          if (window.wwLib && window.wwLib.wwLang) {
+            return window.wwLib.wwLang.getText(props.content.placeholder);
           }
         } catch (e) {
           // Fallback
@@ -238,7 +266,7 @@ export default {
             emit('remove-state', 'readonly');
           }
         } catch (e) {
-          console.warn('Error updating readonly state:', e);
+          logger.warn('Erro ao atualizar estado readonly', e);
         }
       },
       { immediate: true }
@@ -247,11 +275,11 @@ export default {
     // Obter estilos de texto do content de forma segura
     const textStyles = computed(() => {
       try {
-        if (wwLib && wwLib.wwUtils) {
-          return wwLib.wwUtils.getTextStyleFromContent(props.content);
+        if (window.wwLib && window.wwLib.wwUtils) {
+          return window.wwLib.wwUtils.getTextStyleFromContent(props.content);
         }
       } catch (e) {
-        console.warn('Error getting text styles:', e);
+        logger.warn('Erro ao obter estilos de texto', e);
       }
       return {};
     });
@@ -268,6 +296,7 @@ export default {
         ...textStyles.value,
         backgroundColor: props.content.selectorBackgroundColor || 'rgba(0, 0, 0, 0.03)',
         color: props.content.selectorTextColor || textStyles.value.color || 'inherit',
+        width: props.content.countrySelectorWidth || 'auto',
       };
     });
 
@@ -411,10 +440,13 @@ export default {
       searchInputStyle,
       countryItemStyle,
       searchPlaceholder,
+      noResultsText,
       selectorRef,
       dropdownDirection,
       countryListStyle,
       countryItemCSSVars,
+      variableValue,
+      variableRawValue,
     };
   },
 };
@@ -429,12 +461,12 @@ export default {
   border-radius: 8px;
   transition: all 0.3s;
   overflow: visible;
-  z-index: 1;
+  z-index: 5;
 }
 
 .ww-phone-input:hover,
 .ww-phone-input.focus {
-  z-index: 10;
+  z-index: 100;
 }
 
 .ww-phone-input-inner-container {
@@ -443,26 +475,26 @@ export default {
   position: relative;
   height: 100%;
   overflow: visible;
-}
-
+  }
+  
 .ww-phone-input.focus .ww-phone-input-inner-container {
   border-color: rgba(0, 0, 0, 0.3);
-}
-
+  }
+  
 .ww-phone-input.readonly {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
-
-.ww-phone-input-country-selector {
+    opacity: 0.7;
+    cursor: not-allowed;
+  }
+  
+  .ww-phone-input-country-selector {
   position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   height: 100%;
-  background-color: rgba(0, 0, 0, 0.03);
+    background-color: rgba(0, 0, 0, 0.03);
   border-right: 1px solid rgba(0, 0, 0, 0.1);
-  cursor: pointer;
+    cursor: pointer;
   padding: 0;
   margin: 0;
   border: none;
@@ -470,45 +502,71 @@ export default {
   z-index: 2;
 }
 
-.ww-phone-input-country-selector:hover,
-.ww-phone-input-country-selector:focus {
+.ww-phone-input-country-selector:hover:not([disabled]),
+.ww-phone-input-country-selector:focus:not([disabled]) {
   background-color: rgba(0, 0, 0, 0.05);
 }
 
-.selected-country {
-  display: flex;
-  align-items: center;
+.ww-phone-input-country-selector[disabled] {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+    
+    .selected-country {
+      display: flex;
+      align-items: center;
   padding: 0 10px;
   height: 100%;
-  gap: 4px;
-}
-
-.flag {
-  font-size: 1.2em;
+      gap: 4px;
+    }
+    
+    .flag {
+      font-size: 1.2em;
   margin-right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.dial-code {
-  font-size: 0.9em;
-  opacity: 0.8;
-}
-
-.country-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
+.flag-img {
+  width: 24px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+  overflow: visible;
+  
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 2px;
+    display: block;
+    border: 1px solid rgba(0, 0, 0, 0.1);
+  }
+    }
+    
+    .dial-code {
+      font-size: 0.9em;
+      opacity: 0.8;
+    }
+    
+    .country-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
   min-width: 280px;
-  /* Remover estilos padrão que podem estar sobrescrevendo as propriedades dinâmicas */
-  /* background-color: white; */
-  /* border: 1px solid rgba(0, 0, 0, 0.1); */
-  /* border-radius: 8px; */
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      background-color: white;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
   max-height: 350px;
-  z-index: 999;
-  margin-top: 5px;
-  overflow: hidden;
+      z-index: 1000;
+      margin-top: 5px;
+  overflow: visible;
   display: flex;
   flex-direction: column;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
 }
 
 .country-dropdown.dropdown-up {
@@ -517,37 +575,38 @@ export default {
   margin-top: 0;
   margin-bottom: 5px;
 }
-
-.search-container {
-  padding: 8px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+      
+      .search-container {
+        padding: 8px;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
   position: sticky;
   top: 0;
   background-color: white;
   z-index: 2;
 }
-
+        
 .search-input {
-  width: 100%;
-  padding: 8px;
-  /* Remover estilos fixos que serão aplicados dinamicamente */
-  /* border: 1px solid rgba(0, 0, 0, 0.1); */
-  /* border-radius: 4px; */
+          width: 100%;
+          padding: 8px;
   font-family: inherit;
   outline: none;
+          border: 1px solid rgba(0, 0, 0, 0.1);
+          border-radius: 4px;
 }
-
+          
 .search-input:focus {
-  border-color: rgba(0, 0, 0, 0.3);
-}
+            border-color: rgba(0, 0, 0, 0.3);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.05);
+          }
 
 .search-container input::placeholder {
   color: rgba(0, 0, 0, 0.5);
-}
-
-.country-list {
+      }
+      
+      .country-list {
   max-height: 280px;
-  overflow-y: auto;
+        overflow-y: auto;
+  overflow-x: hidden;
   scrollbar-width: thin;
   padding: 5px 0;
   overscroll-behavior: contain;
@@ -568,14 +627,49 @@ export default {
   border-radius: 3px;
 }
 
-.country-item {
-  display: flex;
-  align-items: center;
-  padding: 8px 12px;
-  cursor: pointer;
-  transition: background-color 0.2s;
-  height: 40px;
+.no-results {
+  padding: 12px;
+  text-align: center;
+  color: rgba(0, 0, 0, 0.5);
+  font-style: italic;
 }
+        
+        .country-item {
+          display: flex;
+          align-items: center;
+          padding: 8px 12px;
+          cursor: pointer;
+  transition: background-color 0.2s;
+  min-height: 40px;
+  overflow: visible;
+  position: relative;
+  
+  .flag, .flag-img {
+    min-width: 24px;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 2;
+          }
+          
+          .country-name {
+            flex: 1;
+    padding: 0 8px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    z-index: 2;
+    font-weight: 500;
+          }
+          
+          .dial-code {
+    min-width: 45px;
+    text-align: right;
+    flex-shrink: 0;
+    z-index: 2;
+    font-weight: 500;
+    opacity: 0.85;
+          }
+        }
 
 .country-item:hover {
   background-color: var(--country-item-hover-bg, rgba(0, 0, 0, 0.05));
@@ -585,26 +679,18 @@ export default {
   background-color: var(--country-item-active-bg, rgba(0, 0, 0, 0.1));
 }
 
-.country-name {
-  flex: 1;
-}
-
-.dial-code {
-  opacity: 0.7;
-}
-
-.ww-phone-input-field {
-  flex: 1;
+  .ww-phone-input-field {
+    flex: 1;
   padding-top: v-bind('content.textPaddingY || "8px"');
   padding-bottom: v-bind('content.textPaddingY || "8px"');
   padding-left: v-bind('content.textPaddingX || "12px"');
   padding-right: v-bind('content.textPaddingX || "12px"');
-  border: none;
-  outline: none;
+    border: none;
+    outline: none;
   min-width: 0;
   background-color: transparent;
-  font-family: inherit;
-  font-size: inherit;
+      font-family: inherit;
+      font-size: inherit;
 }
 
 .ww-phone-input-field::placeholder {

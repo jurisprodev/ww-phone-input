@@ -1,409 +1,289 @@
-import { computed, ref, watch } from 'vue';
-import countries from '../countries';
-import { parsePhoneNumberFromString, isValidPhoneNumber } from 'libphonenumber-js';
+import { ref, computed, watch, nextTick } from 'vue';
+import { parsePhoneNumberFromString, formatIncompletePhoneNumber, AsYouType } from 'libphonenumber-js';
+import defaultCountries from '../countries';
+import { normalizeCountry, prepareCountriesList, getFlagEmoji, cleanPhoneNumber, logger } from '../utils';
 
 export function usePhoneInput(props, emit, wwLib) {
-    // Criar referência local para wwLib se não for fornecido
-    const wwLibRef = wwLib || (typeof window !== 'undefined' ? window.wwLib : {});
+    const inputRef = ref(null);
+    const displayValue = ref('');
+    const rawValue = ref('');
     
-    // Estado local
+    // Usar o sistema de gerenciamento de variáveis do WeWeb para expor as variáveis
+    const { value: variableValue, setValue } = wwLib?.wwVariable?.useComponentVariable({
+        uid: props.uid,
+        name: 'value',
+        defaultValue: props.content.value || '',
+    }) || { value: ref(props.content.value || ''), setValue: (val) => { variableValue.value = val; } };
+
+    const { value: variableRawValue, setValue: setRawValue } = wwLib?.wwVariable?.useComponentVariable({
+        uid: props.uid,
+        name: 'rawValue',
+        defaultValue: cleanPhoneNumber(props.content.value) || '',
+    }) || { value: ref(cleanPhoneNumber(props.content.value) || ''), setValue: (val) => { variableRawValue.value = val; } };
+    
     const isReallyFocused = ref(false);
     const isDebouncing = ref(false);
-    const inputRef = ref(null);
-    const countryDropdownOpen = ref(false);
-    const searchQuery = ref('');
-    const selectedCountryCode = ref(props.content.defaultCountry || 'BR');
-    let debounceTimeout = null;
-
-    // Valor exibido no input (formato local)
-    const displayValue = ref('');
     
-    // Valor bruto (apenas dígitos)
-    const rawValue = ref('');
+    // Referência para a lista de países (padrão ou customizada)
+    const countriesList = computed(() => {
+        // Verificar se o conteúdo está definido
+        if (!props.content) {
+            return defaultCountries;
+        }
 
-    // Países filtrados pela busca
+        // Se o usuário definiu uma lista de países customizada, use-a
+        if (props.content.countries && Array.isArray(props.content.countries) && props.content.countries.length > 0) {
+            try {
+                // Normaliza e filtra a lista de países
+                const customCountries = prepareCountriesList(props.content.countries);
+                
+                if (customCountries.length === 0) {
+                    return defaultCountries;
+                }
+                
+                return customCountries;
+            } catch (e) {
+                return defaultCountries;
+            }
+        }
+        
+        // Se não houver lista customizada ou estiver vazia, use a lista padrão
+        return defaultCountries;
+    });
+
+    // Estado para controlar o dropdown
+    const countryDropdownOpen = ref(false);
+    
+    // Termo de busca para filtrar países
+    const searchQuery = ref('');
+    
+    // Lista de países filtrada pela busca
     const filteredCountries = computed(() => {
-        if (!searchQuery.value) return countries;
+        if (!searchQuery.value) {
+            return countriesList.value;
+        }
         
         const query = searchQuery.value.toLowerCase();
-        return countries.filter(country => 
+        return countriesList.value.filter(country => 
             country.name.toLowerCase().includes(query) || 
             country.dialCode.includes(query) ||
             country.code.toLowerCase().includes(query)
         );
     });
 
-    // País selecionado
+    // Código do país selecionado
+    const selectedCountryCode = ref('');
+    
+    // Objeto do país selecionado
     const selectedCountry = computed(() => {
-        return countries.find(country => country.code === selectedCountryCode.value) || 
-               countries.find(country => country.code === 'BR');
+        const country = countriesList.value.find(c => c.code === selectedCountryCode.value);
+        return country || (countriesList.value.length > 0 ? countriesList.value[0] : { code: '', dialCode: '', format: '', mask: '' });
     });
 
-    // Obter o limite máximo de caracteres para o país atual
-    function getMaxLengthForCountry(countryCode) {
-        const country = countries.find(c => c.code === countryCode) || 
-                      countries.find(c => c.code === 'BR');
-        
-        // Verificar se há uma propriedade maxDigits definida
-        if (country.maxDigits) {
-            return country.maxDigits;
+    // Watch para monitorar mudanças na lista de países
+    watch(() => props.content?.countries, (newCountries) => {
+        // Se o país selecionado não estiver mais na lista, selecionar o primeiro
+        if (selectedCountryCode.value && countriesList.value.length > 0) {
+            const exists = countriesList.value.some(c => c.code === selectedCountryCode.value);
+            if (!exists) {
+                selectedCountryCode.value = countriesList.value[0]?.code || '';
+            }
         }
-        
-        // Caso contrário, calcular com base no formato do país
-        if (country.format) {
-            // Contar quantos caracteres '#' existem no formato
-            const placeholders = (country.format.match(/#/g) || []).length;
-            return placeholders;
-        }
-        
-        // Valores padrão por país se não houver informação
-        switch (countryCode) {
-            case 'BR': return 11; // DDD (2) + número celular (9)
-            case 'US': return 10; // Código de área (3) + número (7)
-            case 'PT': return 9;  // Típico para Portugal
-            default: return 15;   // Valor genérico seguro
-        }
-    }
-
-    // Formatar o número de telefone baseado no país usando libphonenumber-js ou formatação personalizada
-    function formatPhoneNumber(value, countryCode) {
-        if (!value) return '';
-        
-        // Remover tudo exceto números
-        const numbers = value.replace(/\D/g, '');
-        
-        const country = countries.find(c => c.code === countryCode) || 
-                       countries.find(c => c.code === 'BR');
-        
-        // Se não tiver números, retorne string vazia
-        if (!numbers) return '';
-
-        // Limitar a quantidade de dígitos ao máximo permitido para o país
-        const maxLength = getMaxLengthForCountry(countryCode);
-        const limitedNumbers = numbers.substring(0, maxLength);
-        
-        try {
-            // Tentar usar libphonenumber-js para formatação
-            const phoneNumber = parsePhoneNumberFromString(`+${country.dialCode}${limitedNumbers}`, country.code);
+    }, { deep: true });
+    
+    // Inicializar o país padrão
+    if (!selectedCountryCode.value && countriesList.value.length > 0) {
+        // Define o país padrão baseado na prioridade ou usa o primeiro da lista
+        const defaultCountry = props.content.defaultCountry 
+            ? countriesList.value.find(c => c.code === props.content.defaultCountry)
+            : countriesList.value.find(c => c.priority === 0) || countriesList.value[0];
             
-            if (phoneNumber) {
-                // Determinar o formato com base nas configurações
-                const format = props.content.phoneDisplayFormat === 'international' ? 'INTERNATIONAL' : 'NATIONAL';
-                return phoneNumber.format(format);
-            }
-        } catch (error) {
-            console.warn('Error formatting phone number:', error);
-        }
-        
-        // Fallback para formatação personalizada baseada no país
-        // Isso será usado quando libphonenumber-js não formatar corretamente
-        switch (country.code) {
-            case 'BR':
-                // Formato: (DD) NNNNN-NNNN
-                let formattedBr = '';
-                if (limitedNumbers.length > 0) {
-                    formattedBr += '(';
-                    if (limitedNumbers.length > 0) {
-                        formattedBr += limitedNumbers.substring(0, Math.min(2, limitedNumbers.length));
-                    }
-                    if (limitedNumbers.length > 2) {
-                        formattedBr += ') ';
-                        formattedBr += limitedNumbers.substring(2, Math.min(7, limitedNumbers.length));
-                    }
-                    if (limitedNumbers.length > 7) {
-                        formattedBr += '-';
-                        formattedBr += limitedNumbers.substring(7);
-                    }
-                }
-                return formattedBr;
-                
-            case 'US':
-                // Formato: (XXX) XXX-XXXX
-                let formattedUs = '';
-                if (limitedNumbers.length > 0) {
-                    formattedUs += '(';
-                    if (limitedNumbers.length > 0) {
-                        formattedUs += limitedNumbers.substring(0, Math.min(3, limitedNumbers.length));
-                    }
-                    if (limitedNumbers.length > 3) {
-                        formattedUs += ') ';
-                        formattedUs += limitedNumbers.substring(3, Math.min(6, limitedNumbers.length));
-                    }
-                    if (limitedNumbers.length > 6) {
-                        formattedUs += '-';
-                        formattedUs += limitedNumbers.substring(6);
-                    }
-                }
-                return formattedUs;
-                
-            default:
-                // Usar o formato definido no país
-                if (!country || !country.format) return limitedNumbers;
-                
-                let formatted = country.format.replace(/\+\d+\s/, ''); // Remove o prefixo +XX do formato
-                let numIndex = 0;
-                
-                // Substituir '#' pelo número correspondente no formato
-                for (let i = 0; i < formatted.length && numIndex < limitedNumbers.length; i++) {
-                    if (formatted[i] === '#') {
-                        formatted = formatted.substring(0, i) + limitedNumbers[numIndex] + formatted.substring(i + 1);
-                        numIndex++;
-                    }
-                }
-                
-                // Remover os # restantes que não foram substituídos
-                formatted = formatted.replace(/#/g, '');
-                
-                return formatted;
+        if (defaultCountry) {
+            selectedCountryCode.value = defaultCountry.code;
         }
     }
 
-    // Extrair apenas os números do telefone
-    function extractNumbers(value) {
-        return value ? value.replace(/\D/g, '') : '';
-    }
-
-    // Função segura para usar a API de variáveis do WeWeb
-    function createComponentVariable(name, defaultValue) {
-        try {
-            if (wwLibRef && wwLibRef.wwVariable && wwLibRef.wwVariable.useComponentVariable) {
-                return wwLibRef.wwVariable.useComponentVariable({
-                    uid: props.uid,
-                    name: name,
-                    defaultValue: defaultValue || '',
-                });
-            }
-        } catch (e) {
-            console.warn(`Error creating component variable ${name}:`, e);
-        }
-        
-        // Fallback: criar uma variável simples se a API não estiver disponível
-        const value = ref(defaultValue || '');
-        return {
-            value,
-            setValue: (newValue) => { value.value = newValue; }
-        };
-    }
-
-    // Variáveis do componente
-    const { value: variableValue, setValue } = createComponentVariable(
-        'value', 
-        props.content.value || ''
-    );
-
-    // Também criar uma variável para o valor bruto (DDI + números)
-    const { value: variableRawValue, setValue: setRawValue } = createComponentVariable(
-        'rawValue', 
-        selectedCountry.value ? (selectedCountry.value.dialCode + extractNumbers(props.content.value)) : extractNumbers(props.content.value) || ''
-    );
-
-    // Inicializar valores
-    watch(
-        () => props.content.value,
-        newValue => {
-            if (!isReallyFocused.value) {
-                // Extrair apenas os números
-                const numbers = extractNumbers(newValue);
-                rawValue.value = numbers;
-                
-                // Formatar os números de acordo com o país
-                displayValue.value = formatPhoneNumber(numbers, selectedCountryCode.value);
-                
-                // Atualizar variáveis
-                variableValue.value = getOutputValue(numbers);
-                // Incluir o DDI no rawValue
-                setRawValue(selectedCountry.value.dialCode + numbers);
-            }
-        },
-        { immediate: true }
-    );
-
-    // Observar mudanças no país selecionado
-    watch(
-        selectedCountryCode,
-        (newCode, oldCode) => {
-            if (newCode !== oldCode) {
-                // Reformatar o número de acordo com o novo país
-                displayValue.value = formatPhoneNumber(rawValue.value, newCode);
-                
-                // Atualizar o valor de saída
-                variableValue.value = getOutputValue(rawValue.value);
-                
-                // Atualizar variável bruta com novo DDI
-                const country = countries.find(c => c.code === newCode) || 
-                              countries.find(c => c.code === 'BR');
-                setRawValue(country.dialCode + rawValue.value);
-                
-                // Emitir evento de mudança de país
-                emit('trigger-event', {
-                    name: 'countryChange',
-                    event: { country: newCode }
-                });
-            }
-        }
-    );
-
-    // Observar mudanças no formato de exibição
-    watch(
-        () => props.content.phoneDisplayFormat,
-        () => {
-            if (!isReallyFocused.value) {
-                displayValue.value = formatPhoneNumber(rawValue.value, selectedCountryCode.value);
-            }
-        }
-    );
-
-    // Validar número de telefone usando libphonenumber-js
-    function validatePhoneNumber(number, countryCode) {
-        if (!number || number.length < 3) return false;
-        
-        const country = countries.find(c => c.code === countryCode);
-        if (!country) return false;
-        
-        try {
-            // Tentar validar usando libphonenumber-js
-            return isValidPhoneNumber(`+${country.dialCode}${number}`, country.code);
-        } catch (error) {
-            console.warn('Error validating phone number:', error);
-            
-            // Validação básica de fallback
-            if (countryCode === 'BR') {
-                return number.length >= 10 && number.length <= 11;
-            }
-            
-            // Verificar pelo tamanho do formato
-            const expectedLength = getMaxLengthForCountry(countryCode);
-            return number.length >= expectedLength * 0.8; // 80% do comprimento esperado
-        }
-    }
-
-    // Obter o valor formatado no formato de saída selecionado
-    function getOutputValue(numbers) {
-        if (!numbers) return '';
-        
-        const country = selectedCountry.value;
-        
-        // Sempre retornar o valor no formato internacional com código do país
-        const nationalFormat = formatPhoneNumber(numbers, selectedCountryCode.value);
-        return `+${country.dialCode} ${nationalFormat}`;
-    }
-
-    // Função segura para obter comprimento a partir de uma string
-    function getLengthValue(lengthStr, defaultValue = 500) {
-        try {
-            if (wwLibRef && wwLibRef.wwUtils && wwLibRef.wwUtils.getLengthUnit) {
-                return wwLibRef.wwUtils.getLengthUnit(lengthStr)[0];
-            }
-        } catch (e) {
-            console.warn('Error getting length value:', e);
-        }
-        return defaultValue;
-    }
-
-    function handleManualInput(event) {
-        if (props.content.readonly) return;
-        
-        // Obter valor do input
-        const inputValue = event.target.value;
-        
-        // Extrair apenas os números (limitar a entrada a dígitos)
-        const numbers = extractNumbers(inputValue);
-        
-        // Limitar a quantidade de caracteres ao máximo permitido para o país
-        const maxLength = getMaxLengthForCountry(selectedCountryCode.value);
-        const limitedNumbers = numbers.substring(0, maxLength);
-        
-        // Atualizar o valor bruto
-        rawValue.value = limitedNumbers;
-        
-        // Atualizar display com formatação
-        displayValue.value = formatPhoneNumber(limitedNumbers, selectedCountryCode.value);
-        
-        // Verificar validade se necessário
-        const isValid = props.content.validatePhoneNumber ? 
-                       validatePhoneNumber(limitedNumbers, selectedCountryCode.value) : 
-                       true;
-        
-        // Obter valor formatado no formato de saída desejado
-        const outputValue = getOutputValue(limitedNumbers);
-        
-        // Atualizar valores
-        setValue(outputValue);
-        // Incluir o DDI no rawValue
-        setRawValue(selectedCountry.value.dialCode + limitedNumbers);
-        
-        // Emitir eventos
-        if (props.content.debounce) {
-            isDebouncing.value = true;
-            if (debounceTimeout) {
-                clearTimeout(debounceTimeout);
-            }
-            
-            const delay = getLengthValue(props.content.debounceDelay, 500);
-            
-            debounceTimeout = setTimeout(() => {
-                emit('trigger-event', {
-                    name: 'change',
-                    event: { 
-                        domEvent: event, 
-                        value: outputValue,
-                        rawValue: selectedCountry.value.dialCode + limitedNumbers,
-                        isValid
-                    }
-                });
-                isDebouncing.value = false;
-            }, delay);
-        } else {
-            emit('trigger-event', {
-                name: 'change',
-                event: { 
-                    domEvent: event, 
-                    value: outputValue,
-                    rawValue: selectedCountry.value.dialCode + limitedNumbers,
-                    isValid
-                }
-            });
-        }
-    }
-
-    function selectCountry(countryCode) {
-        if (props.content.readonly) return;
-        
-        selectedCountryCode.value = countryCode;
-        countryDropdownOpen.value = false;
-        
-        // Reformatar o número atual com o novo país
-        displayValue.value = formatPhoneNumber(rawValue.value, countryCode);
-        
-        // Atualizar o valor de saída
-        variableValue.value = getOutputValue(rawValue.value);
-        
-        // Atualizar variável bruta com novo DDI
-        const country = countries.find(c => c.code === countryCode) || 
-                      countries.find(c => c.code === 'BR');
-        setRawValue(country.dialCode + rawValue.value);
-    }
-
+    // Função para abrir/fechar o dropdown de países
     function toggleCountryDropdown(event) {
-        if (props.content.readonly) return;
+        // Evita que o evento se propague para o documento
+        if (event) {
+            event.stopPropagation();
+        }
         
-        // Impedir que o evento se propague para fechar o dropdown logo após abrir
-        event.stopPropagation();
         countryDropdownOpen.value = !countryDropdownOpen.value;
         
-        // Limpar a busca ao abrir o dropdown
+        // Limpa o termo de busca quando abre o dropdown
         if (countryDropdownOpen.value) {
             searchQuery.value = '';
         }
     }
 
+    // Função para selecionar um país
+    function selectCountry(countryCode) {
+        const previousCountry = selectedCountryCode.value;
+        selectedCountryCode.value = countryCode;
+        
+        // Fechar o dropdown após selecionar
+        countryDropdownOpen.value = false;
+        
+        // Se o país mudou, reformatar o número atual
+        if (previousCountry !== countryCode && rawValue.value) {
+            formatPhoneNumber();
+        }
+        
+        // Focar no input após selecionar o país
+        focusInput();
+        
+        // Emitir evento de mudança de país
+        emit('trigger-event', {
+            name: 'countryChange',
+            event: { country: countryCode }
+        });
+    }
+
+    // Função para formatar o número de telefone
+    function formatPhoneNumber() {
+        if (!rawValue.value) {
+            displayValue.value = '';
+            setValue('');
+            setRawValue('');
+            return;
+        }
+        
+        try {
+            // Usar AsYouType para formatação incremental
+            const formattedNumber = new AsYouType(selectedCountry.value.code).input(`+${selectedCountry.value.dialCode}${rawValue.value}`);
+            displayValue.value = formattedNumber;
+            
+            // Atualizar o valor da variável usando os setters
+            setValue(`+${selectedCountry.value.dialCode}${rawValue.value}`);
+            setRawValue(rawValue.value);
+        } catch (error) {
+            // Fallback para formatação básica
+            displayValue.value = `+${selectedCountry.value.dialCode} ${rawValue.value}`;
+            setValue(`+${selectedCountry.value.dialCode}${rawValue.value}`);
+            setRawValue(rawValue.value);
+        }
+    }
+
+    // Função para lidar com a entrada manual
+    function handleManualInput(event) {
+        const inputValue = event.target.value;
+        
+        // Se o valor está vazio, reiniciar tudo
+        if (!inputValue) {
+            rawValue.value = '';
+            displayValue.value = '';
+            setValue('');
+            setRawValue('');
+            
+            // Emitir eventos para valor vazio
+            emitChange();
+            return;
+        }
+        
+        // Limpar o número para conter apenas dígitos
+        const digitsOnly = cleanPhoneNumber(inputValue);
+        
+        // Se começar com o código de discagem do país, remova-o
+        const dialCode = selectedCountry.value.dialCode;
+        let cleanedNumber = digitsOnly;
+        
+        if (dialCode && cleanedNumber.startsWith(dialCode)) {
+            cleanedNumber = cleanedNumber.substring(dialCode.length);
+        }
+        
+        // Se começar com '+', remova-o também
+        if (cleanedNumber.startsWith('+')) {
+            cleanedNumber = cleanedNumber.substring(1);
+        }
+        
+        // Limitar ao número máximo de dígitos se definido
+        if (selectedCountry.value.maxDigits && cleanedNumber.length > selectedCountry.value.maxDigits) {
+            cleanedNumber = cleanedNumber.substring(0, selectedCountry.value.maxDigits);
+        }
+        
+        // Atualizar o valor bruto
+        rawValue.value = cleanedNumber;
+        
+        // Formatar o número
+        formatPhoneNumber();
+        
+        // Emitir eventos para alteração de valor
+        emitChange();
+    }
+    
+    // Emitir mudança com debounce
+    function emitChange() {
+        if (props.content.debounce) {
+            // Se já estiver debouncing, cancelar
+            if (isDebouncing.value) {
+                clearTimeout(isDebouncing.value);
+            }
+            
+            // Iniciar novo debounce
+            isDebouncing.value = setTimeout(() => {
+                emitChangeEvent();
+                isDebouncing.value = false;
+            }, props.content.debounceDelay || 300);
+        } else {
+            // Sem debounce, emitir imediatamente
+            emitChangeEvent();
+        }
+    }
+    
+    // Emitir eventos de mudança
+    function emitChangeEvent() {
+        // Criar o evento de mudança
+        const phoneData = {
+            value: variableValue.value,
+            rawValue: variableRawValue.value,
+            isValid: true
+        };
+        
+        // Validar o número se necessário
+        if (props.content.validatePhoneNumber) {
+            try {
+                const phoneNumber = parsePhoneNumberFromString(variableValue.value);
+                phoneData.isValid = phoneNumber ? phoneNumber.isValid() : false;
+            } catch (error) {
+                phoneData.isValid = false;
+            }
+        }
+        
+        // Emitir evento de mudança
+        emit('trigger-event', {
+            name: 'change',
+            event: phoneData
+        });
+        
+        // Atualizar o valor do content (para integração com editor)
+        try {
+            emit('update:content:effect', {
+                path: 'value',
+                value: variableValue.value
+            });
+        } catch (e) {
+            // Ignorar erros silenciosamente
+        }
+    }
+    
+    // Lidar com evento de blur (desfoco)
     function onBlur() {
         isReallyFocused.value = false;
         
-        // Permitir um pequeno atraso para que o clique no dropdown seja processado antes
-        setTimeout(() => {
-            countryDropdownOpen.value = false;
-        }, 100);
+        // Validar e formatar o número completo
+        if (rawValue.value && props.content.validatePhoneNumber) {
+            try {
+                const phoneNumber = parsePhoneNumberFromString(variableValue.value);
+                if (phoneNumber && phoneNumber.isValid()) {
+                    // Atualizar com o formato completo
+                    displayValue.value = phoneNumber.format('INTERNATIONAL');
+                }
+            } catch (e) {
+                // Ignorar erros de validação silenciosamente
+            }
+        }
         
         // Emitir evento de blur
         emit('trigger-event', {
@@ -411,58 +291,105 @@ export function usePhoneInput(props, emit, wwLib) {
             event: null
         });
         
-        // Também remover o estado de foco
+        // Remover estado de foco
         try {
-            emit('remove-state', 'focus');
+        emit('remove-state', 'focus');
         } catch (e) {
-            console.warn('Error removing focus state:', e);
+            // Ignorar erros silenciosamente
         }
     }
-
-    function getFlagEmoji(countryCode) {
-        if (!countryCode) return '🏳️';
-        
-        // Conversão de código de país para emoji de bandeira (Regional Indicator Symbol)
-        const codePoints = countryCode
-            .toUpperCase()
-            .split('')
-            .map(char => 127397 + char.charCodeAt(0));
-        
-        return String.fromCodePoint(...codePoints);
-    }
-
+    
+    // Focar no input
     function focusInput() {
-        if (inputRef.value) {
-            inputRef.value.focus();
-            isReallyFocused.value = true;
-            
-            // Também emitir evento de foco
-            emit('trigger-event', {
-                name: 'focus',
-                event: null
-            });
-        }
+        nextTick(() => {
+            if (inputRef.value) {
+                inputRef.value.focus();
+            }
+        });
     }
-
-    function onEnter(event) {
-        if (props.content.readonly) return;
-        
+    
+    // Função para obter o emoji da bandeira a partir do código do país
+    function getFlagEmojiInternal(countryCode) {
+        return getFlagEmoji(countryCode);
+    }
+    
+    // Lidar com tecla Enter
+    function onEnter() {
+        // Emitir evento de tecla Enter
         emit('trigger-event', {
             name: 'onEnterKey',
             event: { 
-                domEvent: event, 
                 value: variableValue.value,
                 rawValue: variableRawValue.value
             }
         });
     }
 
+    // Observar mudanças iniciais no valor e atualizar o componente
+    watch(
+        () => props.content.value,
+        (newValue) => {
+            if (newValue && typeof newValue === 'string' && newValue !== variableValue.value) {
+                try {
+                    // Tentar extrair o código do país e número
+                    let countryCode = selectedCountryCode.value;
+                    let phoneNumber = '';
+                    
+                    // Se começa com +, tenta extrair o código de discagem
+                    if (newValue.startsWith('+')) {
+                        // Procurar por um país que corresponda ao código de discagem
+                        const dialCode = newValue.substring(1).match(/^\d+/)?.[0] || '';
+                        if (dialCode) {
+                            // Encontrar país pelo código de discagem
+                            const country = countriesList.value.find(c => c.dialCode === dialCode);
+                            if (country) {
+                                countryCode = country.code;
+                                // Extrair apenas o número, sem o código de discagem
+                                phoneNumber = newValue.substring(1 + dialCode.length).replace(/\D/g, '');
+                            } else {
+                                // Não encontrou país, usar o número completo
+                                phoneNumber = newValue.substring(1).replace(/\D/g, '');
+                            }
+                        }
+                    } else {
+                        // Sem código de país, usar apenas os dígitos
+                        phoneNumber = newValue.replace(/\D/g, '');
+                    }
+                    
+                    // Atualizar código do país, se encontrado
+                    if (countryCode && countryCode !== selectedCountryCode.value) {
+                        selectedCountryCode.value = countryCode;
+                    }
+                    
+                    // Atualizar número
+                    rawValue.value = phoneNumber;
+                    formatPhoneNumber();
+                    
+                    // Emitir evento de mudança inicial
+                    emit('trigger-event', {
+                        name: 'initValueChange',
+                        event: {
+                            value: variableValue.value,
+                            rawValue: variableRawValue.value
+                        }
+                    });
+                } catch (e) {
+                    // Ignorar erros silenciosamente
+                }
+            }
+        },
+        { immediate: true }
+    );
+
+    // Retornar todos os valores e funções necessários
     return {
         inputRef,
         displayValue,
+        rawValue,
         variableValue,
         variableRawValue,
-        rawValue,
+        setValue,
+        setRawValue,
         isReallyFocused,
         isDebouncing,
         selectedCountry,
@@ -475,8 +402,7 @@ export function usePhoneInput(props, emit, wwLib) {
         toggleCountryDropdown,
         onBlur,
         focusInput,
-        getFlagEmoji,
-        onEnter,
-        validatePhoneNumber
+        getFlagEmoji: getFlagEmojiInternal,
+        onEnter
     };
 }

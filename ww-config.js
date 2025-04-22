@@ -18,6 +18,15 @@ export default {
           'validatePhoneNumber',
           'debounce',
           'debounceDelay',
+          'countries',
+          'mappingCode',
+          'mappingName',
+          'mappingDialCode',
+          'mappingFormat',
+          'mappingMask',
+          'mappingMaxDigits',
+          'mappingFlag',
+          'useCustomImages',
       ],
       customStylePropertiesOrder: [
           'placeholderColor',
@@ -41,6 +50,234 @@ export default {
       { name: 'countryChange', label: { en: 'On country change', pt: 'Ao mudar país' }, event: { country: '' } },
   ],
   properties: {
+      countries: {
+          label: {
+              en: 'Countries List',
+              pt: 'Lista de Países'
+          },
+          type: 'ObjectList',
+          options: {
+              useSchema: true,
+              item: {
+                  type: 'Object',
+                  options: {
+                      item: {
+                          code: {
+                              type: 'Text',
+                              label: { en: 'Country Code', pt: 'Código do País' },
+                              defaultValue: '',
+                              required: true,
+                          },
+                          name: {
+                              type: 'Text',
+                              label: { en: 'Country Name', pt: 'Nome do País' },
+                              defaultValue: '',
+                              required: true,
+                          },
+                          dialCode: {
+                              type: 'Text',
+                              label: { en: 'Dial Code', pt: 'Código de Discagem' },
+                              defaultValue: '',
+                              required: true,
+                          },
+                          format: {
+                              type: 'Text',
+                              label: { en: 'Format', pt: 'Formato' },
+                              defaultValue: '',
+                          },
+                          mask: {
+                              type: 'Text',
+                              label: { en: 'Mask', pt: 'Máscara' },
+                              defaultValue: '',
+                          },
+                          maxDigits: {
+                              type: 'Number',
+                              label: { en: 'Max Digits', pt: 'Máximo de Dígitos' },
+                              defaultValue: 0,
+                          },
+                          priority: {
+                              type: 'Number',
+                              label: { en: 'Priority', pt: 'Prioridade' },
+                              defaultValue: 0,
+                          },
+                          flag: {
+                              type: 'Text',
+                              label: { en: 'Flag URL', pt: 'URL da Bandeira' },
+                              defaultValue: '',
+                              hidden: content => !content.useCustomImages,
+                          },
+                      }
+                  }
+              }
+          },
+          bindable: true,
+          defaultValue: null,
+          bindingValidation: {
+              validations: [
+                  {
+                      type: 'array',
+                  },
+                  {
+                      type: 'object',
+                  },
+              ],
+              tooltip: 'A collection or an array of data: \n\n`myCollection` or `[{code: "BR", name: "Brasil", dialCode: "55"}, ...]`',
+          },
+          section: 'settings',
+          propertyHelp: {
+              tooltip: 'Personalize a lista de países disponíveis para seleção. Cada item deve incluir código do país (ex: BR), nome e código de discagem (ex: 55).',
+          },
+      },
+      useCustomImages: {
+          label: {
+              en: 'Use custom flag images',
+              pt: 'Usar imagens de bandeira personalizadas'
+          },
+          type: 'OnOff',
+          bindable: true,
+          defaultValue: false,
+          section: 'settings',
+      },
+      mappingCode: {
+          label: { 
+              en: 'Country code per item',
+              pt: 'Código do país por item'
+          },
+          type: 'Formula',
+          options: content => ({
+              template: Array.isArray(content.countries) ? content.countries[0] : null,
+          }),
+          defaultValue: {
+              type: 'f',
+              code: "context.mapping?.['code']",
+          },
+          propertyHelp: {
+              tooltip:
+                  'The country code (ISO 2-letter code, e.g. BR, US). This will be executed for each item in the countries list.',
+          },
+          section: 'settings',
+          hidden: content => !content.countries,
+      },
+      mappingName: {
+          label: { 
+              en: 'Country name per item',
+              pt: 'Nome do país por item'
+          },
+          type: 'Formula',
+          options: content => ({
+              template: Array.isArray(content.countries) ? content.countries[0] : null,
+          }),
+          defaultValue: {
+              type: 'f',
+              code: "context.mapping?.['name']",
+          },
+          propertyHelp: {
+              tooltip:
+                  'The country name (e.g. Brasil, Estados Unidos). This will be executed for each item in the countries list.',
+          },
+          section: 'settings',
+          hidden: content => !content.countries,
+      },
+      mappingDialCode: {
+          label: { 
+              en: 'Dial code per item',
+              pt: 'Código de discagem por item'
+          },
+          type: 'Formula',
+          options: content => ({
+              template: Array.isArray(content.countries) ? content.countries[0] : null,
+          }),
+          defaultValue: {
+              type: 'f',
+              code: "context.mapping?.['dialCode']",
+          },
+          propertyHelp: {
+              tooltip:
+                  'The country dial code (e.g. 55, 1). This will be executed for each item in the countries list.',
+          },
+          section: 'settings',
+          hidden: content => !content.countries,
+      },
+      mappingFormat: {
+          label: { 
+              en: 'Format per item',
+              pt: 'Formato por item'
+          },
+          type: 'Formula',
+          options: content => ({
+              template: Array.isArray(content.countries) ? content.countries[0] : null,
+          }),
+          defaultValue: {
+              type: 'f',
+              code: "context.mapping?.['format']",
+          },
+          propertyHelp: {
+              tooltip:
+                  'The phone number format (e.g. +## (##) #####-####). This will be executed for each item in the countries list.',
+          },
+          section: 'settings',
+          hidden: content => !content.countries,
+      },
+      mappingMask: {
+          label: { 
+              en: 'Mask per item',
+              pt: 'Máscara por item'
+          },
+          type: 'Formula',
+          options: content => ({
+              template: Array.isArray(content.countries) ? content.countries[0] : null,
+          }),
+          defaultValue: {
+              type: 'f',
+              code: "context.mapping?.['mask']",
+          },
+          propertyHelp: {
+              tooltip:
+                  'The phone number mask (e.g. +00 (00) 00000-0000). This will be executed for each item in the countries list.',
+          },
+          section: 'settings',
+          hidden: content => !content.countries,
+      },
+      mappingMaxDigits: {
+          label: { 
+              en: 'Max digits per item',
+              pt: 'Dígitos máximos por item'
+          },
+          type: 'Formula',
+          options: content => ({
+              template: Array.isArray(content.countries) ? content.countries[0] : null,
+          }),
+          defaultValue: {
+              type: 'f',
+              code: "context.mapping?.['maxDigits']",
+          },
+          propertyHelp: {
+              tooltip:
+                  'The maximum number of digits for the phone number (e.g. 11). This will be executed for each item in the countries list.',
+          },
+          section: 'settings',
+          hidden: content => !content.countries,
+      },
+      mappingFlag: {
+          label: { 
+              en: 'Flag image per item',
+              pt: 'Imagem da bandeira por item'
+          },
+          type: 'Formula',
+          options: content => ({
+              template: Array.isArray(content.countries) ? content.countries[0] : null,
+          }),
+          defaultValue: {
+              type: 'f',
+              code: "context.mapping?.['flag']",
+          },
+          propertyHelp: {
+              tooltip:
+                  'The flag image URL for the country. This will be executed for each item in the countries list. Only used when "Use custom flag images" is enabled.',
+          },
+          section: 'settings',
+          hidden: content => !content.countries || !content.useCustomImages,
+      },
       placeholderColor: {
           label: {
               en: 'Placeholder color',
